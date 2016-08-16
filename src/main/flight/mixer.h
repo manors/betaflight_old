@@ -131,6 +131,9 @@ typedef enum {
     SERVO_SINGLECOPTER_2 = 4,
     SERVO_SINGLECOPTER_3 = 5,
     SERVO_SINGLECOPTER_4 = 6,
+    
+    SERVO_PWM_DIMMER_1 = 0,
+    SERVO_PWM_DIMMER_2 = 1,
 
 } servoIndex_e; // FIXME rename to servoChannel_e
 
