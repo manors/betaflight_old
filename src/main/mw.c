@@ -123,7 +123,7 @@ extern uint8_t PIDweight[3];
 uint16_t filteredCycleTime;
 static bool isRXDataNew;
 static bool armingCalibrationWasInitialised;
-float setpointRate[3];
+float setpointRate[3], ptermSetpointRate[3];
 float rcInput[3];
 
 extern pidControllerFuncPtr pid_controller;
@@ -173,22 +173,57 @@ bool isCalibrating()
     return (!isAccelerationCalibrationComplete() && sensors(SENSOR_ACC)) || (!isGyroCalibrationComplete());
 }
 
-float calculateSetpointRate(int axis, int16_t rc) {
-    float angleRate;
+#define RC_RATE_INCREMENTAL 14.54f
+#define RC_EXPO_POWER 3
 
-    if (isSuperExpoActive()) {
-        rcInput[axis] = (axis == YAW) ? (ABS(rc) / (500.0f * (currentControlRateProfile->rcYawRate8 / 100.0f))) : (ABS(rc) / (500.0f * (currentControlRateProfile->rcRate8 / 100.0f)));
-        float rcFactor = 1.0f / (constrainf(1.0f - (rcInput[axis] * (currentControlRateProfile->rates[axis] / 100.0f)), 0.01f, 1.00f));
+void calculateSetpointRate(int axis, int16_t rc) {
+    float angleRate, rcRate, rcSuperfactor, rcCommandf;
+    uint8_t rcExpo;
 
-        angleRate = rcFactor * ((27 * rc) / 16.0f);
+    if (axis != YAW) {
+        rcExpo = currentControlRateProfile->rcExpo8;
+        rcRate = currentControlRateProfile->rcRate8 / 100.0f;
     } else {
-        angleRate = (float)((currentControlRateProfile->rates[axis] + 27) * rc) / 16.0f;
+        rcExpo = currentControlRateProfile->rcYawExpo8;
+        rcRate = currentControlRateProfile->rcYawRate8 / 100.0f;
+    }
+
+    if (rcRate > 2.0f) rcRate = rcRate + (RC_RATE_INCREMENTAL * (rcRate - 2.0f));
+    rcCommandf = rc / 500.0f;
+    rcInput[axis] = ABS(rcCommandf);
+
+    if (rcExpo) {
+        float expof = rcExpo / 100.0f;
+        rcCommandf = rcCommandf * powerf(rcInput[axis], RC_EXPO_POWER) * expof + rcCommandf * (1-expof);
+    }
+
+    angleRate = 200.0f * rcRate * rcCommandf;
+
+    if (currentControlRateProfile->rates[axis]) {
+        rcSuperfactor = 1.0f / (constrainf(1.0f - (ABS(rcCommandf) * (currentControlRateProfile->rates[axis] / 100.0f)), 0.01f, 1.00f));
+        if (currentProfile->pidProfile.pidController == PID_CONTROLLER_BETAFLIGHT) {
+            ptermSetpointRate[axis] = constrainf(angleRate * rcSuperfactor, -1998.0f, 1998.0f);
+            if (currentProfile->pidProfile.ptermSRateWeight < 100 && axis != YAW && !flightModeFlags) {
+                const float pWeight = currentProfile->pidProfile.ptermSRateWeight / 100.0f;
+                angleRate = angleRate + (pWeight * ptermSetpointRate[axis] - angleRate);
+            } else {
+                angleRate = ptermSetpointRate[axis];
+            }
+        } else {
+            angleRate *= rcSuperfactor;
+        }
+    } else {
+        if (currentProfile->pidProfile.pidController == PID_CONTROLLER_BETAFLIGHT) ptermSetpointRate[axis] = angleRate;
+    }
+
+    if (debugMode == DEBUG_ANGLERATE) {
+        debug[axis] = angleRate;
     }
 
     if (currentProfile->pidProfile.pidController == PID_CONTROLLER_LEGACY)
-	    return  constrainf(angleRate, -8190.0f, 8190.0f); // Rate limit protection
+        setpointRate[axis] = constrainf(angleRate * 4.1f, -8190.0f, 8190.0f); // Rate limit protection
     else
-        return  constrainf(angleRate / 4.1f, -1997.0f, 1997.0f); // Rate limit protection (deg/sec)
+        setpointRate[axis] = constrainf(angleRate, -1998.0f, 1998.0f); // Rate limit protection (deg/sec)
 }
 
 void scaleRcCommandToFpvCamAngle(void) {
@@ -267,7 +302,7 @@ void processRcCommand(void)
         if (masterConfig.rxConfig.fpvCamAngleDegrees && IS_RC_MODE_ACTIVE(BOXFPVANGLEMIX) && !FLIGHT_MODE(HEADFREE_MODE))
             scaleRcCommandToFpvCamAngle();
 
-        for (int axis = 0; axis < 3; axis++) setpointRate[axis] = calculateSetpointRate(axis, rcCommand[axis]);
+        for (int axis = 0; axis < 3; axis++) calculateSetpointRate(axis, rcCommand[axis]);
 
         isRXDataNew = false;
     }
@@ -298,14 +333,14 @@ static void updateRcCommands(void)
             } else {
                 tmp = 0;
             }
-            rcCommand[axis] = rcLookup(tmp, currentControlRateProfile->rcExpo8, currentControlRateProfile->rcRate8);
+            rcCommand[axis] = tmp;
         } else if (axis == YAW) {
             if (tmp > masterConfig.rcControlsConfig.yaw_deadband) {
                 tmp -= masterConfig.rcControlsConfig.yaw_deadband;
             } else {
                 tmp = 0;
             }
-            rcCommand[axis] = rcLookup(tmp, currentControlRateProfile->rcYawExpo8, currentControlRateProfile->rcYawRate8) * -masterConfig.yaw_control_direction;;
+            rcCommand[axis] = tmp * -masterConfig.yaw_control_direction;
         }
         if (rcData[axis] < masterConfig.rxConfig.midrc) {
             rcCommand[axis] = -rcCommand[axis];
@@ -550,6 +585,8 @@ void processRx(void)
     if (ARMING_FLAG(ARMED)
         && feature(FEATURE_MOTOR_STOP)
         && !STATE(FIXED_WING)
+		&& !feature(FEATURE_3D)
+		&& !isAirmodeActive()
     ) {
         if (isUsingSticksForArming()) {
             if (throttleStatus == THROTTLE_LOW) {
@@ -813,43 +850,30 @@ uint8_t setPidUpdateCountDown(void) {
 // Function for loop trigger
 void taskMainPidLoopCheck(void)
 {
-    static uint32_t previousTime;
     static bool runTaskMainSubprocesses;
+    static uint8_t pidUpdateCountdown;
 
-    const uint32_t currentDeltaTime = getTaskDeltaTime(TASK_SELF);
-
-    cycleTime = micros() - previousTime;
-    previousTime = micros();
+    cycleTime = getTaskDeltaTime(TASK_SELF);
 
     if (debugMode == DEBUG_CYCLETIME) {
         debug[0] = cycleTime;
         debug[1] = averageSystemLoadPercent;
     }
 
-    const uint32_t startTime = micros();
-    while (true) {
-        if (gyroSyncCheckUpdate(&gyro) || ((currentDeltaTime + (micros() - previousTime)) >= (gyro.targetLooptime + GYRO_WATCHDOG_DELAY))) {
-            static uint8_t pidUpdateCountdown;
+    if (runTaskMainSubprocesses) {
+        subTaskMainSubprocesses();
+        runTaskMainSubprocesses = false;
+    }
 
-            if (debugMode == DEBUG_PIDLOOP) {debug[0] = micros() - startTime;} // time spent busy waiting
-            if (runTaskMainSubprocesses) {
-                subTaskMainSubprocesses();
-                runTaskMainSubprocesses = false;
-            }
+    gyroUpdate();
 
-            gyroUpdate();
-
-            if (pidUpdateCountdown) {
-                pidUpdateCountdown--;
-            } else {
-                pidUpdateCountdown = setPidUpdateCountDown();
-                subTaskPidController();
-                subTaskMotorUpdate();
-                runTaskMainSubprocesses = true;
-            }
-
-            break;
-        }
+    if (pidUpdateCountdown) {
+        pidUpdateCountdown--;
+    } else {
+        pidUpdateCountdown = setPidUpdateCountDown();
+        subTaskPidController();
+        subTaskMotorUpdate();
+        runTaskMainSubprocesses = true;
     }
 }
 

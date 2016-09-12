@@ -532,9 +532,9 @@ void mixerInit(mixerMode_e mixerMode, motorMixer_t *initialCustomMixers)
 void mixerUsePWMOutputConfiguration(pwmOutputConfiguration_t *pwmOutputConfiguration, bool use_unsyncedPwm)
 {
     UNUSED(pwmOutputConfiguration);
-
+    
     syncPwmWithPidLoop = !use_unsyncedPwm;
-
+    
     motorCount = 4;
 #ifdef USE_SERVOS
     servoCount = 0;
@@ -817,11 +817,13 @@ void mixTable(void *pidProfilePtr)
         if ((rcCommand[THROTTLE] <= (rxConfig->midrc - flight3DConfig->deadband3d_throttle))) { // Out of band handling
             throttleMax = flight3DConfig->deadband3d_low;
             throttleMin = escAndServoConfig->minthrottle;
-            throttlePrevious = throttle = rcCommand[THROTTLE];
+            throttlePrevious = rcCommand[THROTTLE];
+            throttle = rcCommand[THROTTLE] + flight3DConfig->deadband3d_throttle;
         } else if (rcCommand[THROTTLE] >= (rxConfig->midrc + flight3DConfig->deadband3d_throttle)) { // Positive handling
             throttleMax = escAndServoConfig->maxthrottle;
             throttleMin = flight3DConfig->deadband3d_high;
-            throttlePrevious = throttle = rcCommand[THROTTLE];
+            throttlePrevious = rcCommand[THROTTLE];
+            throttle = rcCommand[THROTTLE] - flight3DConfig->deadband3d_throttle;
         } else if ((throttlePrevious <= (rxConfig->midrc - flight3DConfig->deadband3d_throttle)))  { // Deadband handling from negative to positive
             throttle = throttleMax = flight3DConfig->deadband3d_low;
             throttleMin = escAndServoConfig->minthrottle;
@@ -872,6 +874,19 @@ void mixTable(void *pidProfilePtr)
             if (((rcData[THROTTLE]) < rxConfig->mincheck)) {
                 motor[i] = escAndServoConfig->mincommand;
             }
+        }
+    }
+
+    // Anti Desync feature for ESC's. Limit rapid throttle changes
+    if (escAndServoConfig->maxEscThrottleJumpMs) {
+        const int16_t maxThrottleStep = constrain(escAndServoConfig->maxEscThrottleJumpMs / (1000 / targetPidLooptime), 2, 10000);
+
+        // Only makes sense when it's within the range
+        if (maxThrottleStep < throttleRange) {
+            static int16_t motorPrevious[MAX_SUPPORTED_MOTORS];
+
+            motor[i] = constrain(motor[i], escAndServoConfig->minthrottle, motorPrevious[i] + maxThrottleStep);  // Only limit accelerating situation
+            motorPrevious[i] = motor[i];
         }
     }
 
