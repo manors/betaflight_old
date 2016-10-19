@@ -411,6 +411,9 @@ void mixerInit(mixerMode_e mixerMode, motorMixer_t *initialCustomMotorMixers, se
     // if we want camstab/trig, that also enables servos, even if mixer doesn't
     if (feature(FEATURE_SERVO_TILT))
         useServo = 1;
+    // if we want pwm dimmer, that also enables servos
+    if (feature(FEATURE_PWM_DIMMER))
+        useServo = 1;
 
     // give all servos a default command
     for (uint8_t i = 0; i < MAX_SUPPORTED_SERVOS; i++) {
@@ -567,6 +570,12 @@ STATIC_UNIT_TESTED void forwardAuxChannelsToServos(uint8_t firstServoIndex)
     }
 }
 
+static void updatePwmDimmer(uint8_t firstServoIndex)
+{
+    pwmWriteServo(firstServoIndex + 0, servo[SERVO_PWM_DIMMER_1]);
+    pwmWriteServo(firstServoIndex + 1, servo[SERVO_PWM_DIMMER_2]);
+}
+
 static void updateGimbalServos(uint8_t firstServoIndex)
 {
     pwmWriteServo(firstServoIndex + 0, servo[SERVO_GIMBAL_PITCH]);
@@ -634,6 +643,12 @@ void writeServos(void)
     if (feature(FEATURE_CHANNEL_FORWARDING)) {
         forwardAuxChannelsToServos(servoIndex);
         servoIndex += MAX_AUX_CHANNEL_COUNT;
+    }
+
+    // Two servos for PWM_DIMMER, if enabled
+    if (feature(FEATURE_PWM_DIMMER)) {
+        updatePwmDimmer(servoIndex);
+        servoIndex += 2;
     }
 }
 #endif
@@ -932,6 +947,21 @@ void mixTable(void *pidProfilePtr)
     for (i = 0; i < MAX_SUPPORTED_SERVOS; i++) {
         servo[i] = constrain(servo[i], servoConf[i].min, servoConf[i].max); // limit the values
     }
+
+    // pwm dimmer
+    if (feature(FEATURE_PWM_DIMMER)) {
+        int16_t dimmer_1;
+        dimmer_1 = determineServoMiddleOrForwardFromChannel(SERVO_PWM_DIMMER_1);
+        dimmer_1 = constrain(dimmer_1, 1000, 2000);
+        dimmer_1 = scaleRange(dimmer_1, 1000, 2000, 0, 2000);
+        servo[SERVO_PWM_DIMMER_1] = dimmer_1;
+
+        int16_t dimmer_2;
+        dimmer_2 = determineServoMiddleOrForwardFromChannel(SERVO_PWM_DIMMER_2);
+        dimmer_2 = constrain(dimmer_2, 1000, 2000);
+        dimmer_2 = scaleRange(dimmer_2, 1000, 2000, 0, 2000);
+        servo[SERVO_PWM_DIMMER_2] = dimmer_2;
+    }
 #endif
 }
 
@@ -971,4 +1001,3 @@ void filterServos(void)
 
 #endif
 }
-
