@@ -221,7 +221,7 @@ static const char * const featureNames[] = {
     "SONAR", "TELEMETRY", "CURRENT_METER", "3D", "RX_PARALLEL_PWM",
     "RX_MSP", "RSSI_ADC", "LED_STRIP", "DISPLAY", "OSD",
     "BLACKBOX", "CHANNEL_FORWARDING", "TRANSPONDER", "AIRMODE",
-    "VTX", "RX_NRF24", "SOFTSPI", "PWM_DIMMER", NULL
+    "SUPEREXPO_RATES", "VTX", "RX_NRF24", "SOFTSPI", "PWM_DIMMER", NULL
 };
 
 // sync this with rxFailsafeChannelMode_e
